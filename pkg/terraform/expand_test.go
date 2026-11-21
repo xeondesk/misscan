@@ -1,0 +1,58 @@
+package terraform
+
+import (
+	"testing"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func parseBlocks(t *testing.T, src string) Blocks {
+	t.Helper()
+	f, diags := hclsyntax.ParseConfig([]byte(src), "test.tf", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, diags.HasErrors(), diags.Error())
+	content, diags := f.Body.Content(&hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{
+			{Type: "resource", LabelNames: []string{"type", "name"}},
+		},
+	})
+	require.False(t, diags.HasErrors(), diags.Error())
+	var blocks Blocks
+	for _, hb := range content.Blocks {
+		blocks = append(blocks, NewBlock(hb, nil, nil, nil, "", nil))
+	}
+	return blocks
+}
+
+func TestExpandBlocksCount(t *testing.T) {
+	blocks := parseBlocks(t, `
+resource "aws_s3_bucket" "a" { count = 3 }
+resource "aws_s3_bucket" "b" { }
+`)
+	m := NewModule("", "", blocks, nil, true)
+	out := m.ExpandBlocks()
+	require.Len(t, out, 4)
+	assert.Equal(t, "a[0]", out[0].Labels()[1])
+	assert.Equal(t, "a[2]", out[2].Labels()[1])
+	assert.Equal(t, "b", out[3].Labels()[1])
+}
+
+func TestExpandBlocksCountZero(t *testing.T) {
+	blocks := parseBlocks(t, `resource "aws_s3_bucket" "a" { count = 0 }`)
+	m := NewModule("", "", blocks, nil, true)
+	assert.Empty(t, m.ExpandBlocks())
+}
+
+func TestExpandBlocksForEach(t *testing.T) {
+	blocks := parseBlocks(t, `
+resource "aws_s3_bucket" "a" {
+  for_each = { x = "1", y = "2" }
+}
+`)
+	m := NewModule("", "", blocks, nil, true)
+	out := m.ExpandBlocks()
+	require.Len(t, out, 2)
+	assert.Contains(t, out[0].Labels()[1], "[")
+}
