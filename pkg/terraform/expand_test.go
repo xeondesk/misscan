@@ -56,3 +56,33 @@ resource "aws_s3_bucket" "a" {
 	require.Len(t, out, 2)
 	assert.Contains(t, out[0].Labels()[1], "[")
 }
+
+func TestExpandDynamicBlocks(t *testing.T) {
+	blocks := parseBlocks(t, `
+resource "aws_security_group" "sg" {
+  dynamic "ingress" {
+    for_each = ["80", "443"]
+    content {
+      from_port = ingress.value
+    }
+  }
+}
+`)
+	m := NewModule("", "", blocks, nil, true)
+	out := m.ExpandBlocks()
+	require.Len(t, out, 1)
+	var ingress int
+	for _, b := range out[0].AllBlocks() {
+		if b.Type() == "ingress" {
+			ingress++
+		}
+	}
+	assert.Equal(t, 2, ingress)
+}
+
+func TestModulesExpandAll(t *testing.T) {
+	blocks := parseBlocks(t, `resource "aws_s3_bucket" "a" { count = 2 }`)
+	m := NewModule("", "", blocks, nil, true)
+	mods := Modules{m}.ExpandAll()
+	require.Len(t, mods[0].GetBlocks(), 2)
+}
