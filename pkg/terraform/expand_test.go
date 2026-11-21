@@ -16,6 +16,7 @@ func parseBlocks(t *testing.T, src string) Blocks {
 	content, diags := f.Body.Content(&hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
 			{Type: "resource", LabelNames: []string{"type", "name"}},
+			{Type: "data", LabelNames: []string{"type", "name"}},
 		},
 	})
 	require.False(t, diags.HasErrors(), diags.Error())
@@ -85,4 +86,44 @@ func TestModulesExpandAll(t *testing.T) {
 	m := NewModule("", "", blocks, nil, true)
 	mods := Modules{m}.ExpandAll()
 	require.Len(t, mods[0].GetBlocks(), 2)
+}
+
+func TestUnusedResources(t *testing.T) {
+	blocks := parseBlocks(t, `
+resource "aws_s3_bucket" "used" { }
+resource "aws_s3_bucket" "orphan" { }
+resource "aws_instance" "vm" {
+  ami = aws_s3_bucket.used.id
+}
+`)
+	// parseBlocks schema only allows aws_s3_bucket-type resources? No —
+	// resource blocks accept any type/name labels.
+	m := NewModule("", "", blocks, nil, true)
+	unused := Modules{m}.UnusedResources()
+	// "orphan" and "vm" are unreferenced; "used" is referenced by vm.ami
+	var names []string
+	for _, b := range unused {
+		names = append(names, b.NameLabel())
+	}
+	assert.ElementsMatch(t, []string{"orphan", "vm"}, names)
+}
+
+func TestRemoteStateBlocks(t *testing.T) {
+	f, diags := hclsyntax.ParseConfig([]byte(`
+data "terraform_remote_state" "prod" {
+  backend = "s3"
+  config = { bucket = "b" }
+}
+`), "test.tf", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, diags.HasErrors())
+	content, diags := f.Body.Content(&hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{{Type: "data", LabelNames: []string{"type", "name"}}},
+	})
+	require.False(t, diags.HasErrors())
+	var blocks Blocks
+	for _, hb := range content.Blocks {
+		blocks = append(blocks, NewBlock(hb, nil, nil, nil, "", nil))
+	}
+	m := NewModule("", "", blocks, nil, true)
+	assert.Len(t, Modules{m}.RemoteStateBlocks(), 1)
 }
